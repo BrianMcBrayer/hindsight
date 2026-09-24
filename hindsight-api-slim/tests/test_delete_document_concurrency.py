@@ -149,6 +149,10 @@ async def test_document_mutation_and_relink_preserve_queue(
     async def pause_claim(
         ops: DataAccessOps, conn: DatabaseConnection, table: str, bank_id: str, limit: int
     ) -> list[str]:
+        # Bound the first pass to one real batch. Otherwise it may consume the
+        # mutation's fresh repair before we can assert that it was re-enqueued.
+        if bank_id == bank and claimed.is_set():
+            return []
         ids = await original_claim(ops, conn, table, bank_id, limit)
         if bank_id == bank and ids and not claimed.is_set():
             claimed.set()
@@ -208,6 +212,7 @@ async def test_document_mutation_and_relink_preserve_queue(
             bank,
         )
         assert [row["unit_id"] for row in queued] == [units["b"]]
+        monkeypatch.setattr(ops_type, "claim_graph_maintenance_batch", original_claim)
         await relink_pass(backend=worker._backend, fq_table=fq_table, bank_id=bank, config=None)
         assert not await race.setup.fetchval(
             "SELECT EXISTS(SELECT 1 FROM graph_maintenance_queue WHERE bank_id=$1)",

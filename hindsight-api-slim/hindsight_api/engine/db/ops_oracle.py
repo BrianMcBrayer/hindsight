@@ -22,12 +22,53 @@ from .ops import (
     memory_unit_columns,
 )
 from .result import DictResultRow as ResultRow
+from .result import ResultRow as DatabaseResultRow
 
 ORACLE_IN_LIST_LIMIT = 1000
 
 
 class OracleOps(DataAccessOps):
     """Oracle-specific data access operations."""
+
+    async def fetch_reconcilable_batch_parents(self, conn: DatabaseConnection, table: str) -> list[DatabaseResultRow]:
+        # operation_id is RAW(16), while the JSON relation is an exact lowercase
+        # hyphenated UUID string. Guard conversion and force case-sensitive
+        # matching so malformed/uppercase metadata cannot hide a repairable parent.
+        # type() guards also prevent Oracle's lax paths from unwrapping arrays.
+        return await conn.fetch(
+            f"""
+            SELECT parent.operation_id, parent.bank_id
+            FROM {table} parent
+            WHERE parent.operation_type = 'batch_retain'
+              AND parent.status = 'pending'
+              AND parent.task_payload IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM {table} child
+                  WHERE child.bank_id = parent.bank_id
+                    AND parent.operation_id = CASE
+                        WHEN JSON_VALUE(child.result_metadata, '$.type()') = 'object'
+                        AND JSON_VALUE(child.result_metadata, '$.parent_operation_id.type()') = 'string'
+                        AND REGEXP_LIKE(
+                            JSON_VALUE(
+                                child.result_metadata,
+                                '$.parent_operation_id' RETURNING VARCHAR2(36) NULL ON ERROR
+                            ),
+                            '^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}$',
+                            'c'
+                        )
+                        THEN HEXTORAW(REPLACE(
+                            JSON_VALUE(
+                                child.result_metadata,
+                                '$.parent_operation_id' RETURNING VARCHAR2(36) NULL ON ERROR
+                            ),
+                            '-', ''
+                        ))
+                        ELSE NULL
+                    END
+                    AND child.status NOT IN ('completed', 'failed')
+              )
+            """
+        )
 
     async def bulk_upsert_chunks(
         self,

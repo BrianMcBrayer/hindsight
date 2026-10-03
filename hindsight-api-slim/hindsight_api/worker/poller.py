@@ -1525,7 +1525,8 @@ class WorkerPoller:
         unclaimable, never counted in ``failed_operations``, unretryable via the
         API, and its documents are silently absent. See issue #2985.
 
-        On worker startup we reconcile every such parent:
+        On worker startup we discover parents with no unfinished children,
+        then lock and recheck only those candidates:
 
           * children present, all terminal -> completed / failed (mirrors the
             aggregator, inheriting a representative child error on failure),
@@ -1534,22 +1535,18 @@ class WorkerPoller:
 
         Parents with at least one still-live child are left untouched — the
         normal aggregation path will finish them once their children drain.
+        A child finishing after discovery relies on that path or a later
+        recovery pass; discovery is not a lock or a complete repair snapshot.
 
         Returns the number of parents driven to a terminal state.
         """
         table = fq_table("async_operations", schema)
         schema_display = f'"{schema}"' if schema else str(schema)
         reconciled = 0
+        started_at = time.monotonic()
         try:
             async with self._backend.acquire() as conn:
-                parents = await conn.fetch(
-                    f"""
-                    SELECT operation_id, bank_id FROM {table}
-                    WHERE operation_type = 'batch_retain'
-                      AND status = 'pending'
-                      AND task_payload IS NULL
-                    """
-                )
+                parents = await self._backend.ops.fetch_reconcilable_batch_parents(conn, table)
 
             for parent in parents:
                 parent_id = parent["operation_id"]
@@ -1615,6 +1612,11 @@ class WorkerPoller:
                             )
                         reconciled += 1
 
+            logger.info(
+                f"Worker {self._worker_id} batch parent recovery in schema {schema_display}: "
+                f"candidates={len(parents)}, reconciled={reconciled}, "
+                f"elapsed={time.monotonic() - started_at:.3f}s"
+            )
             if reconciled:
                 logger.warning(
                     f"Worker {self._worker_id} reconciled {reconciled} stranded "

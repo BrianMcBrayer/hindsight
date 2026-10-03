@@ -27,44 +27,34 @@ from .result import ResultRow as DatabaseResultRow
 ORACLE_IN_LIST_LIMIT = 1000
 
 
-def _parent_operation_id_sql(alias: str, *, canonical: bool = False) -> str:
-    """Convert metadata parent UUIDs to RAW(16); canonical mode requires exact lowercase relations."""
-    value = f"""JSON_VALUE(
-        {alias}.result_metadata,
-        '$.parent_operation_id' RETURNING VARCHAR2(36) NULL ON ERROR
-    )"""
-    hex_digit = "[0-9a-f]" if canonical else "[0-9A-Fa-f]"
-    pattern = f"^{hex_digit}{{8}}-{hex_digit}{{4}}-{hex_digit}{{4}}-{hex_digit}{{4}}-{hex_digit}{{12}}$"
-    case_flag = ", 'c'" if canonical else ""
-    condition = f"REGEXP_LIKE( {value}, '{pattern}'{case_flag} )"
-    if canonical:
-        condition = f"JSON_VALUE({alias}.result_metadata, '$.type()') = 'object' AND {condition}"
-    return f"""CASE
-        WHEN {condition}
-        THEN HEXTORAW(REPLACE( {value}, '-', '' ))
-        ELSE NULL
-    END"""
-
-
 class OracleOps(DataAccessOps):
     """Oracle-specific data access operations."""
 
     async def fetch_reconcilable_batch_parents(self, conn: DatabaseConnection, table: str) -> list[DatabaseResultRow]:
-        child_parent_id = _parent_operation_id_sql("child", canonical=True)
         return await conn.fetch(
             f"""
+            WITH pending_parents AS (
+                SELECT operation_id, bank_id, LOWER(RAWTOHEX(operation_id)) AS uuid_hex
+                FROM {table}
+                WHERE operation_type = 'batch_retain'
+                  AND status = 'pending'
+                  AND task_payload IS NULL
+            )
             SELECT parent.operation_id, parent.bank_id
-            FROM {table} parent
-            WHERE parent.operation_type = 'batch_retain'
-              AND parent.status = 'pending'
-              AND parent.task_payload IS NULL
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM {table} child
-                  WHERE child.bank_id = parent.bank_id
-                    AND parent.operation_id = {child_parent_id}
-                    AND child.status NOT IN ('completed', 'failed')
-              )
+            FROM pending_parents parent
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM {table} child
+                WHERE child.bank_id = parent.bank_id
+                  AND child.status NOT IN ('completed', 'failed')
+                  AND JSON_VALUE(child.result_metadata, '$.type()') = 'object'
+                  AND JSON_VALUE(child.result_metadata, '$.parent_operation_id') COLLATE BINARY =
+                      SUBSTR(parent.uuid_hex, 1, 8) || '-' ||
+                      SUBSTR(parent.uuid_hex, 9, 4) || '-' ||
+                      SUBSTR(parent.uuid_hex, 13, 4) || '-' ||
+                      SUBSTR(parent.uuid_hex, 17, 4) || '-' ||
+                      SUBSTR(parent.uuid_hex, 21, 12)
+            )
             """
         )
 
@@ -1148,7 +1138,8 @@ class OracleOps(DataAccessOps):
         # parent guard only for completed/failed children. Before removing a
         # cancelled child, preserve its signal by cancelling a pending parent
         # in this transaction and refreshing the parent's retention window.
-        child_parent_id = _parent_operation_id_sql("candidate_operation")
+        # Validate metadata before HEXTORAW: CASE makes malformed UUIDs yield
+        # NULL while keeping the indexed RAW parent.operation_id key unwrapped.
         effective_batch_size = min(batch_size, ORACLE_IN_LIST_LIMIT)
         candidates = await conn.fetch(
             f"""
@@ -1161,7 +1152,24 @@ class OracleOps(DataAccessOps):
                   OR NOT EXISTS (
                       SELECT 1
                       FROM {table} parent
-                      WHERE parent.operation_id = {child_parent_id}
+                      WHERE parent.operation_id = CASE
+                          WHEN REGEXP_LIKE(
+                              JSON_VALUE(
+                                  candidate_operation.result_metadata,
+                                  '$.parent_operation_id' RETURNING VARCHAR2(36) NULL ON ERROR
+                              ),
+                              '^[0-9A-Fa-f]{{8}}-[0-9A-Fa-f]{{4}}-[0-9A-Fa-f]{{4}}-[0-9A-Fa-f]{{4}}-[0-9A-Fa-f]{{12}}$'
+                          )
+                          THEN HEXTORAW(REPLACE(
+                              JSON_VALUE(
+                                  candidate_operation.result_metadata,
+                                  '$.parent_operation_id' RETURNING VARCHAR2(36) NULL ON ERROR
+                              ),
+                              '-',
+                              ''
+                          ))
+                          ELSE NULL
+                      END
                         AND parent.bank_id = candidate_operation.bank_id
                   )
               )
@@ -1187,7 +1195,24 @@ class OracleOps(DataAccessOps):
                   OR NOT EXISTS (
                       SELECT 1
                       FROM {table} parent
-                      WHERE parent.operation_id = {child_parent_id}
+                      WHERE parent.operation_id = CASE
+                          WHEN REGEXP_LIKE(
+                              JSON_VALUE(
+                                  candidate_operation.result_metadata,
+                                  '$.parent_operation_id' RETURNING VARCHAR2(36) NULL ON ERROR
+                              ),
+                              '^[0-9A-Fa-f]{{8}}-[0-9A-Fa-f]{{4}}-[0-9A-Fa-f]{{4}}-[0-9A-Fa-f]{{4}}-[0-9A-Fa-f]{{12}}$'
+                          )
+                          THEN HEXTORAW(REPLACE(
+                              JSON_VALUE(
+                                  candidate_operation.result_metadata,
+                                  '$.parent_operation_id' RETURNING VARCHAR2(36) NULL ON ERROR
+                              ),
+                              '-',
+                              ''
+                          ))
+                          ELSE NULL
+                      END
                         AND parent.bank_id = candidate_operation.bank_id
                   )
               )
@@ -1218,7 +1243,24 @@ class OracleOps(DataAccessOps):
                     AND candidate_operation.status = 'cancelled'
                     AND candidate_operation.updated_at < $2
                     AND candidate_operation.bank_id = parent.bank_id
-                    AND parent.operation_id = {child_parent_id}
+                    AND parent.operation_id = CASE
+                        WHEN REGEXP_LIKE(
+                            JSON_VALUE(
+                                candidate_operation.result_metadata,
+                                '$.parent_operation_id' RETURNING VARCHAR2(36) NULL ON ERROR
+                            ),
+                            '^[0-9A-Fa-f]{{8}}-[0-9A-Fa-f]{{4}}-[0-9A-Fa-f]{{4}}-[0-9A-Fa-f]{{4}}-[0-9A-Fa-f]{{12}}$'
+                        )
+                        THEN HEXTORAW(REPLACE(
+                            JSON_VALUE(
+                                candidate_operation.result_metadata,
+                                '$.parent_operation_id' RETURNING VARCHAR2(36) NULL ON ERROR
+                            ),
+                            '-',
+                            ''
+                        ))
+                        ELSE NULL
+                    END
               )
             """,
             operation_ids,

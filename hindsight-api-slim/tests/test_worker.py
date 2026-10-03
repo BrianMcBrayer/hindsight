@@ -2053,7 +2053,7 @@ class TestBatchParentRecoveryCandidates:
             await pool.execute("DELETE FROM public.banks WHERE bank_id = $1", bank_id)
 
     @pytest.mark.asyncio
-    async def test_oracle_discovery_uses_shared_parent_uuid_conversion(self):
+    async def test_oracle_discovery_compares_canonical_uuid_text(self):
         from hindsight_api.engine.db.ops_oracle import OracleOps
         from hindsight_api.engine.db.oracle import _rewrite_pg_to_oracle
 
@@ -2064,17 +2064,23 @@ class TestBatchParentRecoveryCandidates:
         rewritten = _rewrite_pg_to_oracle(query).query
         for sql in (query, rewritten):
             compact = " ".join(sql.split())
-            assert 'FROM "tenant".async_operations parent' in compact
+            assert "WITH pending_parents AS" in compact
+            assert "LOWER(RAWTOHEX(operation_id)) AS uuid_hex" in compact
+            assert 'FROM "tenant".async_operations' in compact
+            assert "FROM pending_parents parent" in compact
             assert 'FROM "tenant".async_operations child' in compact
             assert "child.bank_id = parent.bank_id" in compact
             assert "child.status NOT IN ('completed', 'failed')" in compact
-            assert "parent.operation_id = CASE WHEN JSON_VALUE(child.result_metadata, '$.type()') = 'object'" in compact
-            assert "AND REGEXP_LIKE(" in compact
-            assert "'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', 'c'" in compact
-            assert "NULL ON ERROR" in compact
-            assert "THEN HEXTORAW(REPLACE(" in compact
-            assert "ELSE NULL END" in compact
-            assert "RAWTOHEX" not in compact
+            assert "JSON_VALUE(child.result_metadata, '$.type()') = 'object'" in compact
+            assert "JSON_VALUE(child.result_metadata, '$.parent_operation_id') COLLATE BINARY =" in compact
+            assert (
+                "SUBSTR(parent.uuid_hex, 1, 8) || '-' || SUBSTR(parent.uuid_hex, 9, 4) || '-' || "
+                "SUBSTR(parent.uuid_hex, 13, 4) || '-' || SUBSTR(parent.uuid_hex, 17, 4) || '-' || "
+                "SUBSTR(parent.uuid_hex, 21, 12)"
+            ) in compact
+            assert "CASE" not in compact
+            assert "HEXTORAW" not in compact
+            assert "REGEXP" not in compact
             assert "child.JSON_VALUE" not in compact
 
 

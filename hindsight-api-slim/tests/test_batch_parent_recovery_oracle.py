@@ -11,6 +11,7 @@ pytestmark = pytest.mark.oracle
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("linguistic", [False, True], ids=["binary", "linguistic"])
 @pytest.mark.parametrize(
     "relation,child_status,eligible",
     [
@@ -28,7 +29,7 @@ pytestmark = pytest.mark.oracle
         ("missing", "pending", True),
     ],
 )
-async def test_native_candidate_relation(oracle_db_url, relation, child_status, eligible):
+async def test_native_candidate_relation(oracle_db_url, relation, child_status, eligible, linguistic):
     backend = create_database_backend("oracle")
     await backend.initialize(oracle_db_url, min_size=1, max_size=2)
     bank_id = f"test-recovery-{uuid.uuid4().hex[:8]}"
@@ -48,6 +49,10 @@ async def test_native_candidate_relation(oracle_db_url, relation, child_status, 
         metadata = {} if relation == "missing" else {"parent_operation_id": values[relation]}
     try:
         async with backend.acquire() as conn:
+            nls_comp = "LINGUISTIC" if linguistic else "BINARY"
+            nls_sort = "BINARY_CI" if linguistic else "BINARY"
+            await conn.execute(f"ALTER SESSION SET NLS_COMP={nls_comp}")
+            await conn.execute(f"ALTER SESSION SET NLS_SORT={nls_sort}")
             await conn.execute("INSERT INTO banks (bank_id, name) VALUES ($1, $2)", bank_id, bank_id)
             await conn.execute(
                 """INSERT INTO async_operations (operation_id, bank_id, operation_type, status)

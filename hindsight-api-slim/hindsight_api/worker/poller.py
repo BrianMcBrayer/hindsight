@@ -1535,8 +1535,6 @@ class WorkerPoller:
 
         Parents with at least one still-live child are left untouched — the
         normal aggregation path will finish them once their children drain.
-        A child finishing after discovery relies on that path or a later
-        recovery pass; discovery is not a lock or a complete repair snapshot.
 
         Returns the number of parents driven to a terminal state.
         """

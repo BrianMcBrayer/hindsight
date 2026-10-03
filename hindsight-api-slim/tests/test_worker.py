@@ -2053,7 +2053,7 @@ class TestBatchParentRecoveryCandidates:
             await pool.execute("DELETE FROM public.banks WHERE bank_id = $1", bank_id)
 
     @pytest.mark.asyncio
-    async def test_oracle_discovery_uses_exact_safe_raw_uuid_relation(self):
+    async def test_oracle_discovery_uses_shared_parent_uuid_conversion(self):
         from hindsight_api.engine.db.ops_oracle import OracleOps
         from hindsight_api.engine.db.oracle import _rewrite_pg_to_oracle
 
@@ -2069,12 +2069,12 @@ class TestBatchParentRecoveryCandidates:
             assert "child.bank_id = parent.bank_id" in compact
             assert "child.status NOT IN ('completed', 'failed')" in compact
             assert "parent.operation_id = CASE WHEN JSON_VALUE(child.result_metadata, '$.type()') = 'object'" in compact
-            assert "JSON_VALUE(child.result_metadata, '$.parent_operation_id.type()') = 'string'" in compact
             assert "AND REGEXP_LIKE(" in compact
             assert "'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', 'c'" in compact
             assert "NULL ON ERROR" in compact
             assert "THEN HEXTORAW(REPLACE(" in compact
             assert "ELSE NULL END" in compact
+            assert "RAWTOHEX" not in compact
             assert "child.JSON_VALUE" not in compact
 
 

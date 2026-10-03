@@ -935,12 +935,7 @@ class DataAccessOps(ABC):
 
     @abstractmethod
     async def fetch_reconcilable_batch_parents(self, conn: DatabaseConnection, table: str) -> list[ResultRow]:
-        """Find pending payload-less batch parents without unfinished children.
-
-        Discovery spans the supplied tenant table, but children must belong to
-        their parent's bank. The caller must lock and recheck each candidate
-        before repairing it: child/parent status can change after this snapshot.
-        """
+        """Find pending payload-less batch parents without unfinished same-bank children."""
         ...
 
     @abstractmethod

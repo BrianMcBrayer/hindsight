@@ -935,7 +935,12 @@ class DataAccessOps(ABC):
 
     @abstractmethod
     async def fetch_reconcilable_batch_parents(self, conn: DatabaseConnection, table: str) -> list[ResultRow]:
-        """Find pending payload-less batch parents without unfinished same-bank children."""
+        """Find pending payload-less batch parents without unfinished same-bank children.
+
+        A pre-filter for the worker's startup recovery, which rechecks each
+        candidate under a row lock: returning a healthy parent costs one wasted
+        transaction, omitting a stranded one leaves it stranded forever.
+        """
         ...
 
     @abstractmethod

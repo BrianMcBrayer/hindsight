@@ -1526,7 +1526,12 @@ class WorkerPoller:
         API, and its documents are silently absent. See issue #2985.
 
         On worker startup we discover parents with no unfinished children,
-        then lock and recheck only those candidates:
+        then lock and recheck only those candidates. The discovery query is a
+        pre-filter, not the decision: it may hand back a parent that is in fact
+        healthy (the locked recheck then leaves it alone), but never skips one
+        the recheck would have repaired. It replaced a transaction per pending
+        parent, which cost 7m46s of startup on a 51k-parent backlog (#5178).
+        A candidate is driven to:
 
           * children present, all terminal -> completed / failed (mirrors the
             aggregator, inheriting a representative child error on failure),
@@ -1610,7 +1615,11 @@ class WorkerPoller:
                             )
                         reconciled += 1
 
-            logger.info(
+            # Debug when the pass found nothing: a multi-tenant worker runs this
+            # once per schema on every boot, and the interesting outcome already
+            # gets a warning below.
+            log = logger.info if parents else logger.debug
+            log(
                 f"Worker {self._worker_id} batch parent recovery in schema {schema_display}: "
                 f"candidates={len(parents)}, reconciled={reconciled}, "
                 f"elapsed={time.monotonic() - started_at:.3f}s"

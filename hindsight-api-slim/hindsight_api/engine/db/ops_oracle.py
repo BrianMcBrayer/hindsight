@@ -31,6 +31,20 @@ class OracleOps(DataAccessOps):
     """Oracle-specific data access operations."""
 
     async def fetch_reconcilable_batch_parents(self, conn: DatabaseConnection, table: str) -> list[DatabaseResultRow]:
+        # Same anti-join as PostgreSQL (see PostgreSQLOps for why it is an
+        # anti-join and why over-inclusive is the safe direction), with three
+        # Oracle-only details:
+        #   * operation_id is stored as RAW(16), so the CTE renders it back to
+        #     canonical dashed UUID text to compare against what the children
+        #     wrote into result_metadata. HEXTORAW on the child side would raise
+        #     on any value that is not 32 hex digits.
+        #   * `$.type()` keeps JSON_VALUE on an object root: a child whose
+        #     result_metadata is an array or scalar yields no match instead of an
+        #     error.
+        #   * COLLATE BINARY pins the comparison case-sensitive. A session with
+        #     NLS_COMP=LINGUISTIC and a case-insensitive NLS_SORT would otherwise
+        #     match an upper-cased UUID that the locked recheck's exact JSON
+        #     comparison rejects, which would strand the parent.
         return await conn.fetch(
             f"""
             WITH pending_parents AS (
